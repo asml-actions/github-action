@@ -1,10 +1,10 @@
-import Docker from './docker';
+import { exec, getExecOutput } from '@actions/exec';
+import { Docker } from './docker';
 import { Input } from './input';
-import { exec } from '@actions/exec';
-import fs from 'fs/promises';
-import path from 'path';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 
-class Renovate {
+export class Renovate {
   static dockerGroupRegex = /^docker:x:(?<groupId>[1-9][0-9]*):/m;
   private configFileMountDir = '/github-action';
 
@@ -12,6 +12,17 @@ class Renovate {
 
   constructor(private input: Input) {
     this.docker = new Docker(input);
+  }
+
+  async runDockerContainerForVersion(): Promise<string> {
+    const command = `docker run -t --rm ${this.docker.image()} --version`;
+
+    const { exitCode, stdout } = await getExecOutput(command);
+    if (exitCode !== 0) {
+      new Error(`'docker run' failed with exit code ${exitCode}.`);
+    }
+
+    return stdout.trim();
   }
 
   async runDockerContainer(): Promise<void> {
@@ -33,8 +44,16 @@ class Renovate {
     }
 
     if (this.input.mountDockerSocket()) {
+      const sockPath = this.input.dockerSocketHostPath();
+      const stat = await fs.stat(sockPath);
+      if (!stat.isSocket()) {
+        throw new Error(
+          `docker socket host path '${sockPath}' MUST exist and be a socket`,
+        );
+      }
+
       dockerArguments.push(
-        '--volume /var/run/docker.sock:/var/run/docker.sock',
+        `--volume ${sockPath}:/var/run/docker.sock`,
         `--group-add ${await this.getDockerGroupId()}`,
       );
     }
@@ -57,13 +76,18 @@ class Renovate {
       dockerArguments.push(`--volume ${volumeMount}`);
     }
 
+    const dockerNetwork = this.input.getDockerNetwork();
+    if (dockerNetwork) {
+      dockerArguments.push(`--network ${dockerNetwork}`);
+    }
+
     dockerArguments.push('--rm', this.docker.image());
 
     if (dockerCmd !== null) {
       dockerArguments.push(dockerCmd);
     }
 
-    const command = `docker run ${dockerArguments.join(' ')}`;
+    const command = `docker run -t ${dockerArguments.join(' ')}`;
 
     const code = await exec(command);
     if (code !== 0) {
@@ -113,5 +137,3 @@ class Renovate {
     }
   }
 }
-
-export default Renovate;
